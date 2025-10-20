@@ -42,7 +42,7 @@ gene_stat_df = (
 )
 
 #%%
-gene_of_interest_idx = gene_label_tbl.query("name == 'PPBP'").index.to_list()[0] + 1
+gene_of_interest_idx = gene_label_tbl.query("name == 'LYZ'").index.to_list()[0] + 1
 
 gene_of_interest_obs_count_tbl = (
 
@@ -53,22 +53,38 @@ gene_of_interest_obs_count_tbl = (
     .assign(lcount = lambda df: np.log10(df.rel_count))
     
 )
-marker_clustering = hdbscan.HDBSCAN(min_cluster_size= np.max([2,np.ceil(gene_of_interest_obs_count_tbl.barcode_idx.nunique()/20).astype(int)]))
+min_bassin_size = np.ceil(gene_of_interest_obs_count_tbl.barcode_idx.nunique()/10).astype(int)
+marker_clustering = hdbscan.HDBSCAN(min_cluster_size= np.max([min_bassin_size,50]),min_samples=1,allow_single_cluster=True,cluster_selection_method='eom')
 
-marker_clustering.fit(gene_of_interest_obs_count_tbl.loc[:,['rel_count']])
+marker_clustering.fit(gene_of_interest_obs_count_tbl.loc[:,['lcount']])
+#%%
+marker_clustering.condensed_tree_.plot()
 #%%
 (gene_of_interest_obs_count_tbl
  .assign(hdbscan_labels = marker_clustering.labels_)
  .assign(single_read = lambda df: df.read_count.lt(2))
  .groupby(['hdbscan_labels'])
  .agg(single_prop = ('single_read','mean'),
-      ncell = ('barcode_idx','nunique'))
+      ncell = ('barcode_idx','nunique'),
+      avg_rel = ('rel_count','mean'))
  .reset_index()
  .assign(abundance = lambda df: df.ncell / gene_of_interest_obs_count_tbl.barcode_idx.nunique())
- .query('single_prop < 0.5')
 
 )
 # %%
+
+(gene_of_interest_obs_count_tbl
+ .lcount
+ .plot.kde())
+#%%
+(gene_of_interest_obs_count_tbl
+ .assign(hdbscan_labels = marker_clustering.labels_)
+ .assign(single_read = lambda df: df.read_count.lt(2))
+ .groupby(['hdbscan_labels'])
+ .lcount
+ .plot.kde(legend=True)
+
+)
 
 
 # %%
