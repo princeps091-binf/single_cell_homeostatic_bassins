@@ -42,7 +42,7 @@ gene_stat_df = (
 )
 
 #%%
-gene_of_interest_idx = gene_label_tbl.query("name == 'LYZ'").index.to_list()[0] + 1
+gene_of_interest_idx = gene_label_tbl.query("name == 'MS4A7'").index.to_list()[0] + 1
 
 gene_of_interest_obs_count_tbl = (
 
@@ -85,8 +85,86 @@ marker_clustering.condensed_tree_.plot()
  .plot.kde(legend=True)
 
 )
+#%%
+homeostatic_cell_id_list = (gene_of_interest_obs_count_tbl
+ .assign(hdbscan_labels = marker_clustering.labels_)
+ .query('hdbscan_labels == 0')
+ .barcode_idx.drop_duplicates().to_list()
+)
 
+(
+    count_tbl
+    .query('barcode_idx in @homeostatic_cell_id_list')
+    .gene_idx
+    .value_counts()
+    .reset_index()
+    .rename(columns={'count':'homeo'})
+    .merge(
+           count_tbl
+            .gene_idx
+            .value_counts()
+            .reset_index()
+            .rename(columns={'count':'tot'})
 
+    )
+    .merge(
+        count_tbl
+        .merge(cell_cov_tbl)
+        .assign(rel_count = lambda df: df.read_count / df.tot_count)
+        .groupby('gene_idx')
+        .agg(avg_rel = ('rel_count','mean'))
+        .reset_index()
+
+    )
+    .assign(col_trx=lambda df: np.log10(df.avg_rel))
+    .sort_values('avg_rel')
+    .plot
+    .scatter(x='homeo',y='tot',c='col_trx',logx=True,logy=True)
+)
+
+#%%
+(
+    count_tbl
+    .query('barcode_idx in @homeostatic_cell_id_list')
+    .barcode_idx
+    .value_counts()
+    .reset_index()
+    .rename(columns={'count':'homeo'})
+    .homeo.plot.kde()
+)
+#%%
+(count_tbl
+    .query('barcode_idx in @homeostatic_cell_id_list')
+    .merge(cell_cov_tbl)
+    .assign(rel_count = lambda df: np.log10(df.read_count / df.tot_count))
+    .rel_count.plot.kde()
+)
+#%%
+df_wide = (count_tbl
+    .query('barcode_idx in @homeostatic_cell_id_list')
+    .merge(cell_cov_tbl)
+    .assign(rel_count = lambda df: df.read_count / df.tot_count)
+
+    .pivot_table(
+        index='barcode_idx',
+        columns='gene_idx',
+        values='rel_count',
+        fill_value=0  # IMPORTANT: Fill NaN values (zero counts) with 0
+    )
+        
+)
+
+cell_clusterer = hdbscan.HDBSCAN(min_cluster_size= 20,min_samples=1,allow_single_cluster=True,cluster_selection_method='eom',metric='manhattan')
+
+cell_clusterer.fit(df_wide)
+#%%
+cell_clusterer.condensed_tree_.plot()
+#%%
+cell_clusterer.labels_
+#%%
+import matplotlib.pyplot as plt
+plt.figure(figsize=(15, 20))
+plt.imshow(df_wide.to_numpy(), cmap='binary')
 # %%
 conf_int_arrays = st.confint_poisson(gene_of_interest_obs_count_tbl.read_count.to_numpy(), gene_of_interest_obs_count_tbl.tot_count.to_numpy(), method="exact-c", alpha=1-0.95)
 
