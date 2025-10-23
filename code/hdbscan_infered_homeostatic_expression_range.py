@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import hdbscan
 import statsmodels.stats.rates as st
+from scipy.stats import binom
 #%%
 
 filtered_count_file = './../data/filtered_gene_bc_matrices/hg19/matrix.mtx'
@@ -40,6 +41,68 @@ gene_stat_df = (
     .reset_index()
     .assign(CV2 = lambda df: (df.std_rel/df.avg_rel)**2)
 )
+#%%
+(    count_tbl
+    .merge(cell_cov_tbl)
+    .assign(rel_count = lambda df: df.read_count / df.tot_count)
+
+    .plot
+    .scatter(x='tot_count',y='rel_count',logx=True)
+
+)
+#%%
+(    count_tbl
+    .merge(cell_cov_tbl)
+    .assign(single = lambda df: df.read_count.lt(2))
+    .groupby(['gene_idx'])
+    .agg(single_prop = ('single','mean'),
+         ncell = ('barcode_idx','nunique'))
+    .reset_index()
+    .plot
+    .scatter(y='ncell',x='single_prop',alpha=0.2,s=0.2)
+)
+#%%
+(    count_tbl
+    .merge(cell_cov_tbl)
+    .assign(single = lambda df: df.read_count.lt(2))
+    .groupby(['barcode_idx','tot_count'])
+    .agg(prop_single = ('single','mean'),
+         single_sum = ('single','sum'))
+    .reset_index()
+    .assign(single_tot_prop = lambda df: df.single_sum/df.tot_count)
+    .sort_values('prop_single')
+    .plot
+    .scatter(x='tot_count',y='single_tot_prop',c='prop_single',logx=True)
+
+
+)
+#%%
+gene_read_rate_tbl =(
+    count_tbl
+    .groupby('gene_idx')
+    .agg(gene_read_count = ('read_count','sum'))
+)
+gene_read_rate_tbl = (gene_read_rate_tbl
+                      .assign(gene_read_rate = lambda df: df.gene_read_count / count_tbl.read_count.sum())
+                      .reset_index()
+                      )
+
+
+#%%
+(    count_tbl
+    .merge(cell_cov_tbl)
+    .merge(gene_read_rate_tbl)
+    .query('barcode_idx == 1000')
+    .assign(zero_count_proba = lambda df: df.apply(lambda row: binom.cdf(0, row.tot_count, row.gene_read_rate),axis=1),
+            enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1))
+    .assign(detectable = lambda df: df.zero_count_proba.lt(0.5),
+            lcount = lambda df: np.log10(df.read_count),
+            odds_ratio = lambda df: (df.read_count/df.tot_count) /df.gene_read_rate,
+            pscore = lambda df: -np.log10(df.enrichment))
+    .query('detectable')
+    .plot
+    .scatter(x='odds_ratio',y='pscore',s=2,logx=True)      
+)
 
 #%%
 gene_of_interest_idx = gene_label_tbl.query("name == 'MS4A7'").index.to_list()[0] + 1
@@ -71,7 +134,8 @@ marker_clustering.condensed_tree_.plot()
  .assign(abundance = lambda df: df.ncell / gene_of_interest_obs_count_tbl.barcode_idx.nunique())
 
 )
-# %%
+#%%
+
 
 (gene_of_interest_obs_count_tbl
  .lcount
@@ -84,6 +148,19 @@ marker_clustering.condensed_tree_.plot()
  .lcount
  .plot.kde(legend=True)
 
+)
+#%%
+(gene_of_interest_obs_count_tbl
+ .assign(hdbscan_labels = marker_clustering.labels_)
+ .query('hdbscan_labels == 0')
+ .read_count.value_counts()
+)
+#%%
+(gene_of_interest_obs_count_tbl
+ .assign(hdbscan_labels = marker_clustering.labels_)
+ .query('hdbscan_labels == 0')
+ .plot
+ .scatter(x='tot_count',y='read_count',logy=True,logx=True)
 )
 #%%
 homeostatic_cell_id_list = (gene_of_interest_obs_count_tbl
@@ -117,6 +194,37 @@ homeostatic_cell_id_list = (gene_of_interest_obs_count_tbl
 
     )
     .assign(col_trx=lambda df: np.log10(df.avg_rel))
+    .sort_values('avg_rel')
+    .plot
+    .scatter(x='homeo',y='tot',c='col_trx',logx=True,logy=True)
+)
+#%%
+(
+    count_tbl
+    .query('barcode_idx in @homeostatic_cell_id_list')
+    .gene_idx
+    .value_counts()
+    .reset_index()
+    .rename(columns={'count':'homeo'})
+    .merge(
+           count_tbl
+            .gene_idx
+            .value_counts()
+            .reset_index()
+            .rename(columns={'count':'tot'})
+
+    )
+    .merge(
+        count_tbl
+        .merge(cell_cov_tbl)
+        .assign(rel_count = lambda df: df.read_count / df.tot_count)
+        .groupby('gene_idx')
+        .agg(avg_rel = ('rel_count','mean'))
+        .reset_index()
+
+    )
+    .assign(col_trx=lambda df: np.log10(df.avg_rel))
+    .query('gene_idx == @')
     .sort_values('avg_rel')
     .plot
     .scatter(x='homeo',y='tot',c='col_trx',logx=True,logy=True)
