@@ -59,7 +59,7 @@ gene_stat_df = (
     .assign(rel_count = lambda df: df.read_count / df.tot_count)
 
     .plot
-    .scatter(x='tot_count',y='rel_count',logx=True)
+    .scatter(x='tot_count',y='rel_count',logy=True,logx=True,s=0.2)
 
 )
 #%%
@@ -88,6 +88,7 @@ gene_stat_df = (
 
 
 )
+
 #%%
 gene_read_rate_tbl =(
     count_tbl
