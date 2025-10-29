@@ -30,6 +30,17 @@ cell_cov_tbl = (count_tbl
  .reset_index())
 
 #%%
+gene_read_rate_tbl =(
+    count_tbl
+    .groupby('gene_idx')
+    .agg(gene_read_count = ('read_count','sum'))
+)
+gene_read_rate_tbl = (gene_read_rate_tbl
+                      .assign(gene_read_rate = lambda df: df.gene_read_count / count_tbl.read_count.sum())
+                      .reset_index()
+                      )
+
+#%%
 gene_of_interest_idx = gene_label_tbl.query("name == 'MS4A7'").index.to_list()[0] + 1
 
 gene_of_interest_obs_count_tbl = (
@@ -59,9 +70,8 @@ marker_clustering.condensed_tree_.plot()
  .assign(abundance = lambda df: df.ncell / gene_of_interest_obs_count_tbl.barcode_idx.nunique())
 
 )
+
 #%%
-
-
 (gene_of_interest_obs_count_tbl
  .lcount
  .plot.kde())
@@ -123,6 +133,26 @@ homeostatic_cell_id_list = (gene_of_interest_obs_count_tbl
     .plot
     .scatter(x='homeo',y='tot',c='col_trx',logx=True,logy=True)
 )
+#%%
+(    count_tbl
+    .merge(cell_cov_tbl)
+    .merge(gene_read_rate_tbl)
+    .query('gene_idx == @gene_of_interest_idx')
+    .assign(rel_count = lambda df: df.read_count / df.tot_count)
+    .assign(zero_count_proba = lambda df: df.apply(lambda row: binom.cdf(0, row.tot_count, row.gene_read_rate),axis=1),
+            enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1))
+    .assign(detectable = lambda df: df.zero_count_proba.lt(0.5),
+            lcount = lambda df: np.log10(df.read_count),
+            odds_ratio = lambda df: (df.read_count/df.tot_count) /df.gene_read_rate,
+            pscore = lambda df: -np.log10(df.enrichment))
+    .sort_values('odds_ratio')
+    .enrichment
+    .plot.kde()
+    # .plot
+    # .scatter(x='odds_ratio',y='pscore',c='lcount',logx=True)      
+)
+
+
 #%%
 (
     count_tbl
