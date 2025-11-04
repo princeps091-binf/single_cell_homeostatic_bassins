@@ -134,13 +134,17 @@ cell_tbl = (
            .loc[:,['gene_idx','name']])
 )
 #%%
-cell_tbl.merge(
+(cell_tbl.merge(
     adata.obsm['pearson_residuals']
     .loc[cell_of_interest]
     .reset_index()
     .rename(columns={'index':'name',cell_of_interest:'sctransform'})
     ,how='left'
-).assign(scrank = lambda df: df.sctransform.rank(pct=True)).dropna().plot.scatter(x='prank',y='scrank')
-
-
+)
+.dropna()
+.assign(scrank = lambda df: df.sctransform.rank(pct=True,ascending=False))
+.plot.scatter(x='prank',y='scrank',s=0.5,
+              xlabel='binomial test significance',
+              ylabel='negative binomial regression residual')
+)
 # %%
