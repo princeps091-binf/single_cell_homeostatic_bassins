@@ -5,6 +5,7 @@ import hdbscan
 import statsmodels.stats.rates as st
 from scipy.stats import binom
 from scipy.stats import false_discovery_control
+import scanpy
 #%%
 
 filtered_count_file = './../data/filtered_gene_bc_matrices/hg19/matrix.mtx'
@@ -150,6 +151,7 @@ unobserved_but_expected_tbl = (    count_tbl
     .merge(gene_read_rate_tbl)
     .assign(cell_rate = lambda df: df.read_count/df.tot_count)
     .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
+    .assign(rel_count = lambda df: df.read_count/df.tot_count)
     .groupby('gene_idx')
     .agg(gene_OR_mean = ('cell_vs_bulk_OR','mean'),
          gene_OR_sd = ('cell_vs_bulk_OR','std'),
@@ -183,16 +185,73 @@ unobserved_but_expected_tbl = (    count_tbl
     # .plot.scatter(x='pscore',y='cell_rate_score',s=10,alpha=0.1)
 
 )
+
 #%%
+gene_of_interest_idx = gene_label_tbl.query("name == 'MS4A7'").index.to_list()[0] + 1
+
+
 (count_tbl
+ .query('gene_idx == @gene_of_interest_idx')
+ .loc[:,['barcode_idx']]
+ .drop_duplicates()
+ .merge(cell_cov_tbl)
+ .sort_values('tot_count')
+ )
+# %%
+cell_a_tbl = (
+    count_tbl
     .merge(cell_cov_tbl)
     .merge(gene_read_rate_tbl)
     .assign(cell_rate = lambda df: df.read_count/df.tot_count)
     .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
-    .query('barcode_idx == 1679')
+    .query('barcode_idx == 1765')
     .assign(enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1),
             fdr = lambda df: false_discovery_control(df.enrichment))
-    .assign(pscore = lambda df: -np.log10(df.fdr))
-    .query('pscore > 3.6')
+    .assign(pscore = lambda df: -np.log10(df.enrichment),
+            prank = lambda df: df.pscore.rank(pct=True,ascending=False)
+            )
+
+)
+
+cell_b_tbl = (
+    count_tbl
+    .merge(cell_cov_tbl)
+    .merge(gene_read_rate_tbl)
+    .assign(cell_rate = lambda df: df.read_count/df.tot_count)
+    .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
+    .query('barcode_idx == 93')
+    .assign(enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1),
+            fdr = lambda df: false_discovery_control(df.enrichment)
+            )
+    .assign(pscore = lambda df: -np.log10(df.enrichment),
+            prank = lambda df: df.pscore.rank(pct=True,ascending=False)
+)
+
+)
+a_b_gene_union_list = list(set(cell_b_tbl.gene_idx.to_list()).union(cell_a_tbl.gene_idx.to_list()))
+a_b_gene_inter_list = list(set(cell_b_tbl.gene_idx.to_list()).intersection(cell_a_tbl.gene_idx.to_list()))
+
+cell_compare_tbl = (pd.DataFrame({'gene_idx':a_b_gene_inter_list})
+ .merge(cell_a_tbl.loc[:,['gene_idx','prank','enrichment']],how='left')
+ .fillna(1)
+ .rename(columns={'prank':'cell_a','enrichment':'a_pvalue'})
+ .merge(cell_b_tbl.loc[:,['gene_idx','prank','enrichment']],how='left')
+ .fillna(1)
+ .rename(columns={'prank':'cell_b','enrichment':'b_pvalue'})
+ .assign(avg_pval = lambda df: (df.b_pvalue + df.a_pvalue)/2,
+         avg_cut = lambda df: pd.cut(df.avg_pval,[0,0.01,0.05,0.25,0.5,1.1]))
+
+)
+#%%
+(cell_compare_tbl
+ .plot
+ .scatter(x='cell_a',y='cell_b',c='avg_cut',cmap='viridis_r',s=2)
 )
 # %%
+from scipy.stats import kendalltau
+
+kendalltau(cell_compare_tbl.cell_a.to_numpy(),cell_compare_tbl.cell_b.to_numpy())
+# %%
+len(a_b_gene_inter_list)/len(a_b_gene_union_list)
+# %%
+cell_b_tbl.enrichment.lt(0.5).mean()
