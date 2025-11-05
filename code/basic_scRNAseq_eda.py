@@ -7,6 +7,8 @@ from scipy.stats import binom
 from scipy.stats import false_discovery_control
 import xlmhglite
 import itertools
+from multiprocessing import Pool
+from functools import partial
 #%%
 
 filtered_count_file = './../data/filtered_gene_bc_matrices/hg19/matrix.mtx'
@@ -188,7 +190,7 @@ unobserved_but_expected_tbl = (    count_tbl
 )
 
 #%%
-gene_of_interest_idx = gene_label_tbl.query("name == 'MS4A7'").index.to_list()[0] + 1
+gene_of_interest_idx = gene_label_tbl.query("name == 'FCER1A'").index.to_list()[0] + 1
 
 
 (count_tbl
@@ -197,8 +199,20 @@ gene_of_interest_idx = gene_label_tbl.query("name == 'MS4A7'").index.to_list()[0
  .drop_duplicates()
  .merge(cell_cov_tbl)
  .sort_values('tot_count')
- .tail(20)
  )
+
+cells_of_interest_list = (count_tbl
+ .query('gene_idx == @gene_of_interest_idx')
+ .loc[:,['barcode_idx']]
+ .drop_duplicates()
+ .merge(cell_cov_tbl)
+ .sort_values('tot_count')
+ .barcode_idx.drop_duplicates().to_list()
+ )
+print(len(cells_of_interest_list))
+
+my_list = cells_of_interest_list
+pairwise_combinations = list(itertools.combinations(my_list, 2))
 
 #%%
 
@@ -220,14 +234,14 @@ cell_tbl = (
 score_quantile = cell_tbl.pscore.quantile([0.25,0.75])
 out_up_score_thresh = score_quantile.iloc[1] + 1.5*(score_quantile.iloc[1] - score_quantile.iloc[0])
 print(cell_tbl.query('fdr < 1/@cell_tbl.shape[0]').shape[0]/cell_tbl.shape[0])
-print(cell_tbl.query('pscore > @out_score_thresh').shape[0]/cell_tbl.shape[0])
+print(cell_tbl.query('pscore > @out_up_score_thresh').shape[0]/cell_tbl.shape[0])
 
 # %%
 cell_a_tbl = (
     count_tbl
     .merge(cell_cov_tbl)
     .merge(gene_read_rate_tbl)
-    .query('barcode_idx == 2568')
+    .query('barcode_idx == 1457')
     .assign(cell_rate = lambda df: df.read_count/df.tot_count)
     .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
     .assign(enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1),
@@ -244,7 +258,7 @@ cell_b_tbl = (
     .merge(gene_read_rate_tbl)
     .assign(cell_rate = lambda df: df.read_count/df.tot_count)
     .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
-    .query('barcode_idx == 1878')
+    .query('barcode_idx == 1634')
     .assign(enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1),
             fdr = lambda df: false_discovery_control(df.enrichment)
             )
@@ -271,12 +285,15 @@ cell_compare_tbl = (pd.DataFrame({'gene_idx':a_b_gene_union_list})
 
 (cell_compare_tbl
  .plot
- .scatter(x='cell_a',y='cell_b',c='avg_cut',cmap='viridis_r',s=2)
+ .scatter(x='cell_a',y='cell_b',c='avg_cut',alpha=1,cmap='viridis_r',s=2)
 )
 
 
 v_a = cell_a_tbl.sort_values('pscore',ascending=False).assign(v=lambda df: np.where(df.gene_idx.isin(a_b_gene_inter_list),1,0)).v.to_numpy()
 v_b = cell_b_tbl.sort_values('pscore',ascending=False).assign(v=lambda df: np.where(df.gene_idx.isin(a_b_gene_inter_list),1,0)).v.to_numpy()
+# case for agreement with self
+# v_a[-1] = 0
+# v_b[-1] = 0
 
 _, _, pval_a = xlmhglite.xlmhg_test(v_a, int(5), int(cell_a_tbl.shape[0]))
 _, _, pval_b = xlmhglite.xlmhg_test(v_b, int(5), int(cell_b_tbl.shape[0]))
@@ -284,47 +301,37 @@ _, _, pval_b = xlmhglite.xlmhg_test(v_b, int(5), int(cell_b_tbl.shape[0]))
 print(pval_a)
 print(pval_b)
 # %%
-
-my_list = (cell_cov_tbl
- .sort_values('tot_count')
- .tail(10).barcode_idx.to_list()
- )
-
-pairwise_combinations = list(itertools.combinations(my_list, 2))
 # %%
-df =[]
 
-for pair in pairwise_combinations:
-    cell_a_tbl = (
-    count_tbl
+data_tbl = (    count_tbl
     .merge(cell_cov_tbl)
     .merge(gene_read_rate_tbl)
-    .query('barcode_idx == @pair[0]')
-    .assign(cell_rate = lambda df: df.read_count/df.tot_count)
-    .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
-    .assign(enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1),
-            fdr = lambda df: false_discovery_control(df.enrichment))
-    .assign(pscore = lambda df: -np.log10(df.enrichment),
-            prank = lambda df: df.pscore.rank(pct=True,ascending=False)
-            )
+)
 
-    )
-
-    cell_b_tbl = (
-        count_tbl
-        .merge(cell_cov_tbl)
-        .merge(gene_read_rate_tbl)
+def get_cell_similarity(pair,data_tbl):
+    cell_a_tbl = (data_tbl
+        .query('barcode_idx == @pair[0]')
         .assign(cell_rate = lambda df: df.read_count/df.tot_count)
         .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
-        .query('barcode_idx == @pair[1]')
         .assign(enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1),
-                fdr = lambda df: false_discovery_control(df.enrichment)
-                )
+                fdr = lambda df: false_discovery_control(df.enrichment))
         .assign(pscore = lambda df: -np.log10(df.enrichment),
                 prank = lambda df: df.pscore.rank(pct=True,ascending=False)
-    )
+                )
 
-    )
+        )
+    cell_b_tbl = (data_tbl
+        .query('barcode_idx == @pair[1]')
+        .assign(cell_rate = lambda df: df.read_count/df.tot_count)
+        .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
+        .assign(enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1),
+                fdr = lambda df: false_discovery_control(df.enrichment))
+        .assign(pscore = lambda df: -np.log10(df.enrichment),
+                prank = lambda df: df.pscore.rank(pct=True,ascending=False)
+                )
+
+        )
+    
     a_b_gene_union_list = list(set(cell_b_tbl.gene_idx.to_list()).union(cell_a_tbl.gene_idx.to_list()))
     a_b_gene_inter_list = list(set(cell_b_tbl.gene_idx.to_list()).intersection(cell_a_tbl.gene_idx.to_list()))
 
@@ -333,7 +340,22 @@ for pair in pairwise_combinations:
 
     _, _, pval_a = xlmhglite.xlmhg_test(v_a, int(5), int(cell_a_tbl.shape[0]))
     _, _, pval_b = xlmhglite.xlmhg_test(v_b, int(5), int(cell_b_tbl.shape[0]))
-    df.append(pd.DataFrame({'a':[pair[0]],'b':pair[1],'a_pvalue':[pval_a],'b_pvalue':[pval_b]}))
+    return pd.DataFrame({'a':[pair[0]],'b':pair[1],'a_pvalue':[pval_a],'b_pvalue':[pval_b]})
+#%%    
 
+tmp_pair = pairwise_combinations[900]
+get_cell_similarity(tmp_pair,data_tbl)
+
+#%%
+df = [get_cell_similarity(pair,data_tbl) for pair in pairwise_combinations]
+#%%
+with Pool(processes=5) as pool:
+        # pool.map applies 'parallel_func' to every item in 'pairwise_combinations'
+        df = pool.map(partial(get_cell_similarity,data_tbl=data_tbl), pairwise_combinations)
 # %%
-pd.concat(df)
+(pd.concat(df)
+ .assign(avg_pvalue = lambda df: (df.a_pvalue + df.b_pvalue)/2)
+ .sort_values('avg_pvalue')
+#  .avg_pvalue
+#  .plot.kde()
+ )
