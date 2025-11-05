@@ -308,31 +308,23 @@ data_tbl = (    count_tbl
     .merge(gene_read_rate_tbl)
 )
 
+def get_cell_enrich(cell_id,data_tbl):
+    return (data_tbl
+        .query('barcode_idx == @cell_id')
+        .assign(cell_rate = lambda df: df.read_count/df.tot_count)
+        .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
+        .assign(enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1),
+                fdr = lambda df: false_discovery_control(df.enrichment))
+        .assign(pscore = lambda df: -np.log10(df.enrichment),
+                prank = lambda df: df.pscore.rank(pct=True,ascending=False)
+                )
+
+        )  
+
 def get_cell_similarity(pair,data_tbl):
-    cell_a_tbl = (data_tbl
-        .query('barcode_idx == @pair[0]')
-        .assign(cell_rate = lambda df: df.read_count/df.tot_count)
-        .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
-        .assign(enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1),
-                fdr = lambda df: false_discovery_control(df.enrichment))
-        .assign(pscore = lambda df: -np.log10(df.enrichment),
-                prank = lambda df: df.pscore.rank(pct=True,ascending=False)
-                )
-
-        )
-    cell_b_tbl = (data_tbl
-        .query('barcode_idx == @pair[1]')
-        .assign(cell_rate = lambda df: df.read_count/df.tot_count)
-        .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
-        .assign(enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1),
-                fdr = lambda df: false_discovery_control(df.enrichment))
-        .assign(pscore = lambda df: -np.log10(df.enrichment),
-                prank = lambda df: df.pscore.rank(pct=True,ascending=False)
-                )
-
-        )
+    cell_a_tbl = get_cell_enrich(pair[0],data_tbl)
+    cell_b_tbl = get_cell_enrich(pair[1],data_tbl)
     
-    a_b_gene_union_list = list(set(cell_b_tbl.gene_idx.to_list()).union(cell_a_tbl.gene_idx.to_list()))
     a_b_gene_inter_list = list(set(cell_b_tbl.gene_idx.to_list()).intersection(cell_a_tbl.gene_idx.to_list()))
 
     v_a = cell_a_tbl.sort_values('pscore',ascending=False).assign(v=lambda df: np.where(df.gene_idx.isin(a_b_gene_inter_list),1,0)).v.to_numpy()
@@ -341,8 +333,31 @@ def get_cell_similarity(pair,data_tbl):
     _, _, pval_a = xlmhglite.xlmhg_test(v_a, int(5), int(cell_a_tbl.shape[0]))
     _, _, pval_b = xlmhglite.xlmhg_test(v_b, int(5), int(cell_b_tbl.shape[0]))
     return pd.DataFrame({'a':[pair[0]],'b':pair[1],'a_pvalue':[pval_a],'b_pvalue':[pval_b]})
-#%%    
-
+#%%
+get_cell_enrich(230,data_tbl)    
+#%%
+with Pool(processes=5) as pool:
+        # pool.map applies 'parallel_func' to every item in 'pairwise_combinations'
+        df = pool.map(partial(get_cell_enrich,data_tbl=data_tbl), count_tbl.barcode_idx.drop_duplicates().to_list())
+#%%
+(pd.concat(df)
+ .assign(credible=lambda df:df.fdr.lt(0.05))
+ .groupby('gene_idx')
+ .agg(mfdr = ('fdr','mean'),
+      m_count=('cell_rate','mean'),
+      max_count = ('cell_rate','max'),
+      std_count = ('cell_rate','std'),
+      ncell=('barcode_idx','nunique'),
+      prop_cred=('credible','mean'))
+ .reset_index()
+ .query('ncell > 10')
+ .sort_values('m_count',ascending=False)
+ .assign(lmfdr = lambda df: df.mfdr.rank(pct=True),
+         lmcount = lambda df: df.m_count.rank(pct=True,ascending=False),
+         lstd = lambda df: df.std_count.rank(pct=True,ascending=False))
+ .plot.scatter(x='ncell',y='lmfdr',c='lmcount',s=10,logx=True)
+)
+#%%
 tmp_pair = pairwise_combinations[900]
 get_cell_similarity(tmp_pair,data_tbl)
 
