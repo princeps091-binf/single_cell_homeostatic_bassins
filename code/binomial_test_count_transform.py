@@ -1,12 +1,8 @@
 #%%
 import pandas as pd
 import numpy as np
-import hdbscan
-import statsmodels.stats.rates as st
 from scipy.stats import binom
 from scipy.stats import false_discovery_control
-import xlmhglite
-import itertools
 from multiprocessing import Pool
 from functools import partial
 #%%
@@ -93,7 +89,7 @@ def get_cell_enrich(cell_id,data_tbl):
         )  
 #%%
 #%%
-cell_tbl = get_cell_enrich(230,data_tbl)
+cell_tbl = get_cell_enrich(20,data_tbl)
 score_quantile = cell_tbl.pscore.quantile([0.25,0.75])
 out_up_score_thresh = score_quantile.iloc[1] + 1.5*(score_quantile.iloc[1] - score_quantile.iloc[0])
 print(cell_tbl.query('fdr < 1/@cell_tbl.shape[0]').shape[0]/cell_tbl.shape[0])
@@ -107,7 +103,7 @@ with Pool(processes=10) as pool:
 (pd.concat(df)
  .assign(credible=lambda df:df.fdr.lt(0.05))
  .groupby('gene_idx')
- .agg(mfdr = ('fdr','min'),
+ .agg(mfdr = ('fdr','max'),
       m_count=('cell_rate','mean'),
       max_count = ('cell_rate','max'),
       std_count = ('cell_rate','std'),
@@ -125,3 +121,4 @@ with Pool(processes=10) as pool:
 tmp_gene_idx = gene_label_tbl.query("name == 'GZMB'").index.to_list()[0] + 1
 
 pd.concat(df).query("gene_idx == @tmp_gene_idx").plot.scatter(x='cell_rate',y='fdr',logy=True,s=0.5)
+#%%

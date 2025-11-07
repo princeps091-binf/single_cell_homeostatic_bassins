@@ -1,18 +1,9 @@
 #%% 
 import pandas as pd
 import numpy as np
-import hdbscan
-import statsmodels.stats.rates as st
 from scipy.stats import binom
 from scipy.stats import false_discovery_control
-import xlmhglite
-import itertools
-from multiprocessing import Pool
-from functools import partial
-from scipy.spatial.distance import squareform
-from scipy.cluster.hierarchy import linkage, dendrogram, optimal_leaf_ordering
-import matplotlib.pyplot as plt
-
+    
 #%%
 
 filtered_count_file = './../data/filtered_gene_bc_matrices/hg19/matrix.mtx'
@@ -192,54 +183,3 @@ unobserved_but_expected_tbl = (    count_tbl
     # .plot.scatter(x='pscore',y='cell_rate_score',s=10,alpha=0.1)
 
 )
-
-#%%
-gene_of_interest_idx = gene_label_tbl.query("name == 'MS4A7'").index.to_list()[0] + 1
-
-cells_of_interest_list = (count_tbl
- .query('gene_idx == @gene_of_interest_idx')
- .loc[:,['barcode_idx']]
- .drop_duplicates()
- .merge(cell_cov_tbl)
- .sort_values('tot_count')
- .barcode_idx.drop_duplicates().to_list()
- )
-print(len(cells_of_interest_list))
-
-my_list = cells_of_interest_list
-pairwise_combinations = list(itertools.combinations(my_list, 2))
-len(pairwise_combinations)
-
-
-# %%
-
-data_tbl = (    count_tbl
-    .merge(cell_cov_tbl)
-    .merge(gene_read_rate_tbl)
-)
-
-def get_cell_enrich(cell_id,data_tbl):
-    return (data_tbl
-        .query('barcode_idx == @cell_id')
-        .assign(cell_rate = lambda df: df.read_count/df.tot_count)
-        .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
-        .assign(enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1),
-                fdr = lambda df: false_discovery_control(df.enrichment))
-        .assign(pscore = lambda df: -np.log10(df.enrichment),
-                prank = lambda df: df.pscore.rank(pct=True,ascending=False)
-                )
-
-        )  
-
-def get_cell_similarity(pair,data_tbl):
-    cell_a_tbl = get_cell_enrich(pair[0],data_tbl)
-    cell_b_tbl = get_cell_enrich(pair[1],data_tbl)
-    
-    a_b_gene_inter_list = list(set(cell_b_tbl.gene_idx.to_list()).intersection(cell_a_tbl.gene_idx.to_list()))
-
-    v_a = cell_a_tbl.sort_values('pscore',ascending=False).assign(v=lambda df: np.where(df.gene_idx.isin(a_b_gene_inter_list),1,0)).v.to_numpy()
-    v_b = cell_b_tbl.sort_values('pscore',ascending=False).assign(v=lambda df: np.where(df.gene_idx.isin(a_b_gene_inter_list),1,0)).v.to_numpy()
-
-    _, _, pval_a = xlmhglite.xlmhg_test(v_a, int(1), int(cell_a_tbl.shape[0]))
-    _, _, pval_b = xlmhglite.xlmhg_test(v_b, int(1), int(cell_b_tbl.shape[0]))
-    return pd.DataFrame({'a':[pair[0]],'b':pair[1],'a_pvalue':[pval_a],'b_pvalue':[pval_b]})
