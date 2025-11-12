@@ -1,8 +1,6 @@
 #%%
 import pandas as pd
 import numpy as np
-import hdbscan
-import statsmodels.stats.rates as st
 from scipy.stats import binom
 from scipy.stats import false_discovery_control
 import xlmhglite
@@ -12,7 +10,7 @@ from functools import partial
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage, dendrogram, optimal_leaf_ordering
 import matplotlib.pyplot as plt
-
+from sklearn.metrics.pairwise import euclidean_distances,manhattan_distances, cosine_distances
 #%%
 #%%
 
@@ -108,6 +106,7 @@ def get_cell_similarity(pair,data_tbl):
     _, _, pval_a = xlmhglite.xlmhg_test(v_a, int(1), int(cell_a_tbl.shape[0]))
     _, _, pval_b = xlmhglite.xlmhg_test(v_b, int(1), int(cell_b_tbl.shape[0]))
     return pd.DataFrame({'a':[pair[0]],'b':pair[1],'a_pvalue':[pval_a],'b_pvalue':[pval_b]})
+
 #%%
 with Pool(processes=10) as pool:
         # pool.map applies 'parallel_func' to every item in 'pairwise_combinations'
@@ -116,7 +115,7 @@ with Pool(processes=10) as pool:
 data_enrich_tbl = pd.concat(df)
 
 #%%
-gene_of_interest_idx = gene_label_tbl.query("name == 'MS4A7'").index.to_list()[0] + 1
+gene_of_interest_idx = gene_label_tbl.query("name == 'CD79A'").index.to_list()[0] + 1
 
 cells_of_interest_list = (count_tbl
  .query('gene_idx == @gene_of_interest_idx')
@@ -144,27 +143,29 @@ with Pool(processes=10) as pool:
 tmp_biomarker_bassin_tbl = (pd.concat(df)
  .assign(avg_pvalue = lambda df: (df.a_pvalue + df.b_pvalue)/2)
  .assign(two_way= lambda df: df.a_pvalue.lt(0.5) * df.b_pvalue.lt(0.5))
+ .assign(a_b = lambda df: df.a_pvalue.lt(df.b_pvalue))
+ .assign(max_pvalue = lambda df: np.where(df.a_b,df.b_pvalue,df.a_pvalue))
 #  .query('two_way')
 )
-#%%
+ #%%
 unique_items = sorted(list(set(tmp_biomarker_bassin_tbl['a']).union(set(tmp_biomarker_bassin_tbl['b']))))
 dist_matrix_square = pd.DataFrame(1.0, index=unique_items, columns=unique_items)
 for _, row in tmp_biomarker_bassin_tbl.iterrows():
     item1 = row['a']
     item2 = row['b']
-    distance = row['avg_pvalue']
+    distance = row['max_pvalue']
     dist_matrix_square.loc[item1, item2] = distance
     dist_matrix_square.loc[item2, item1] = distance # Assuming symmetric distances
 np.fill_diagonal(dist_matrix_square.to_numpy(), 0.0)
 
-condensed_dist_matrix = squareform(dist_matrix_square)
-linked = linkage(condensed_dist_matrix, method='ward') # You can choose other methods like 'complete', 'average', 'single'
+mhgt_condensed_dist_matrix = squareform(dist_matrix_square)
+linked = linkage(mhgt_condensed_dist_matrix, method='ward') # You can choose other methods like 'complete', 'average', 'single'
 # Extract the leaf order from the linkage matrix
 # The optimal_leaf_ordering function reorders the leaves for better visualization
-ordered_linked = optimal_leaf_ordering(linked, condensed_dist_matrix)
-leaf_order = dendrogram(ordered_linked, no_plot=True)['leaves']
-reordered_matrix = dist_matrix_square.to_numpy()[leaf_order, :]
-reordered_matrix = reordered_matrix[:, leaf_order]
+mght_ordered_linked = optimal_leaf_ordering(linked, mhgt_condensed_dist_matrix)
+mght_leaf_order = dendrogram(mght_ordered_linked, no_plot=True)['leaves']
+mght_reordered_matrix = dist_matrix_square.to_numpy()[mght_leaf_order, :]
+mght_reordered_matrix = mght_reordered_matrix[:, mght_leaf_order]
 
 #%%
 fig, ax = plt.subplots(figsize=(7, 6))
@@ -172,9 +173,9 @@ fig, ax = plt.subplots(figsize=(7, 6))
 # 2. Display the matrix data as an image
 # 'cmap' sets the color scheme (e.g., 'viridis', 'plasma', 'coolwarm', 'Greys')
 # 'interpolation' determines how pixels are drawn (nearest is usually best for matrices)
-im = ax.imshow(reordered_matrix, cmap='plasma_r', interpolation='nearest')
+im = ax.imshow(mght_reordered_matrix, cmap='plasma_r', interpolation='nearest')
 
-    # %%
+# %%
 cell_a_tbl = (
     data_enrich_tbl
     .query('barcode_idx == 983')
@@ -216,3 +217,43 @@ _, _, pval_b = xlmhglite.xlmhg_test(v_b, int(5), int(cell_b_tbl.shape[0]))
 
 print(pval_a)
 print(pval_b)
+#%%
+tmp_count_matrix = (pd.pivot(data_enrich_tbl
+ .query('barcode_idx in @cells_of_interest_list')
+ .loc[:,['gene_idx','barcode_idx','enrichment','cell_rate']]
+ .assign(log1p = lambda df: np.log10(df.cell_rate + 1)),
+ index='barcode_idx',columns='gene_idx',values='log1p')
+ .fillna(0)
+ )
+
+tmp_distance_matrix = euclidean_distances(tmp_count_matrix, tmp_count_matrix)
+#%%
+tmp_distance_matrix[np.where(~(tmp_distance_matrix == tmp_distance_matrix.T))]
+#%%
+condensed_dist_matrix = squareform(np.round(tmp_distance_matrix,decimals=5))
+linked = linkage(condensed_dist_matrix, method='ward') # You can choose other methods like 'complete', 'average', 'single'
+# Extract the leaf order from the linkage matrix
+# The optimal_leaf_ordering function reorders the leaves for better visualization
+ordered_linked = optimal_leaf_ordering(linked, condensed_dist_matrix)
+leaf_order = dendrogram(ordered_linked, no_plot=True)['leaves']
+reordered_matrix = tmp_distance_matrix[mght_leaf_order, :]
+reordered_matrix = reordered_matrix[:, mght_leaf_order]
+
+mght_values_reordered_matrix = dist_matrix_square.to_numpy()[leaf_order, :]
+mght_values_reordered_matrix = mght_reordered_matrix[:, leaf_order]
+
+#%%
+fig, ax = plt.subplots(figsize=(7, 6))
+
+# 2. Display the matrix data as an image
+# 'cmap' sets the color scheme (e.g., 'viridis', 'plasma', 'coolwarm', 'Greys')
+# 'interpolation' determines how pixels are drawn (nearest is usually best for matrices)
+im = ax.imshow(reordered_matrix, cmap='plasma_r', interpolation='nearest')
+
+# %%
+(pd.DataFrame({'mght':mhgt_condensed_dist_matrix,'euclidean':condensed_dist_matrix})
+ .plot
+ .scatter(x='mght',y='euclidean',s=0.1,alpha=0.3))
+
+
+# %%

@@ -107,7 +107,7 @@ unobserved_but_expected_tbl = (    count_tbl
 
 # %%
 
-cell_of_interest = 'TTTCGAACTCTCAT-1'
+cell_of_interest = 'CCAGTCTGCGGAGA-1'
 
 barcode_idx = barcode_label_tbl.query('ID == @cell_of_interest').index.to_list()[0] + 1
 
@@ -145,6 +145,6 @@ cell_tbl = (
 .assign(scrank = lambda df: df.sctransform.rank(pct=True,ascending=False))
 .plot.scatter(x='prank',y='scrank',s=0.5,
               xlabel='binomial test significance',
-              ylabel='negative binomial regression residual')
+              ylabel='SCTransform')
 )
 # %%
