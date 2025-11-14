@@ -11,6 +11,7 @@ from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage, dendrogram, optimal_leaf_ordering
 import matplotlib.pyplot as plt
 from sklearn.metrics.pairwise import euclidean_distances,manhattan_distances, cosine_distances
+from sklearn.manifold import MDS
 #%%
 #%%
 
@@ -115,7 +116,7 @@ with Pool(processes=10) as pool:
 data_enrich_tbl = pd.concat(df)
 
 #%%
-gene_of_interest_idx = gene_label_tbl.query("name == 'CD79A'").index.to_list()[0] + 1
+gene_of_interest_idx = gene_label_tbl.query("name == 'PPBP'").index.to_list()[0] + 1
 
 cells_of_interest_list = (count_tbl
  .query('gene_idx == @gene_of_interest_idx')
@@ -174,7 +175,17 @@ fig, ax = plt.subplots(figsize=(7, 6))
 # 'cmap' sets the color scheme (e.g., 'viridis', 'plasma', 'coolwarm', 'Greys')
 # 'interpolation' determines how pixels are drawn (nearest is usually best for matrices)
 im = ax.imshow(mght_reordered_matrix, cmap='plasma_r', interpolation='nearest')
-
+#%%
+mds = MDS(n_components=2, dissimilarity='precomputed', random_state=42)
+X_transformed = mds.fit_transform(dist_matrix_square)
+#%%
+plt.figure(figsize=(8, 6))
+plt.scatter(X_transformed[:, 0], X_transformed[:, 1])
+plt.title('MDS Embedding with Precomputed Distance Matrix')
+plt.xlabel('Component 1')
+plt.ylabel('Component 2')
+plt.grid(True)
+plt.show()
 # %%
 cell_a_tbl = (
     data_enrich_tbl
