@@ -236,8 +236,8 @@ linked = linkage(condensed_dist_matrix, method='ward') # You can choose other me
 # The optimal_leaf_ordering function reorders the leaves for better visualization
 ordered_linked = optimal_leaf_ordering(linked, condensed_dist_matrix)
 leaf_order = dendrogram(ordered_linked, no_plot=True)['leaves']
-reordered_matrix = tmp_distance_matrix[mght_leaf_order, :]
-reordered_matrix = reordered_matrix[:, mght_leaf_order]
+reordered_matrix = tmp_distance_matrix[leaf_order, :]
+reordered_matrix = reordered_matrix[:, leaf_order]
 
 mght_values_reordered_matrix = dist_matrix_square.to_numpy()[leaf_order, :]
 mght_values_reordered_matrix = mght_reordered_matrix[:, leaf_order]

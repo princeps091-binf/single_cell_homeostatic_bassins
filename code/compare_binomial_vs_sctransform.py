@@ -1,13 +1,14 @@
 #%%
 import pandas as pd
 import numpy as np
-import hdbscan
-import statsmodels.stats.rates as st
 from scipy.stats import binom
 from scipy.stats import false_discovery_control
 import scanpy as sc
 import anndata as ad
 from pysctransform import SCTransform
+from multiprocessing import Pool
+from functools import partial
+
 #%%
 filtered_count_folder = './../data/filtered_gene_bc_matrices/hg19/'
 filtered_count_file = './../data/filtered_gene_bc_matrices/hg19/matrix.mtx'
@@ -146,5 +147,108 @@ cell_tbl = (
 .plot.scatter(x='prank',y='scrank',s=0.5,
               xlabel='binomial test significance',
               ylabel='SCTransform')
+)
+#%%
+def get_cell_enrich(cell_id,data_tbl):
+    return (data_tbl
+        .query('barcode_idx == @cell_id')
+        .assign(cell_rate = lambda df: df.read_count/df.tot_count)
+        .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
+        .assign(enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1),
+                fdr = lambda df: false_discovery_control(df.enrichment))
+        .assign(pscore = lambda df: -np.log10(df.enrichment),
+                prank = lambda df: df.pscore.rank(pct=True,ascending=False)
+                )
+
+        )
+#%%  
+data_tbl = (    count_tbl
+    .merge(cell_cov_tbl)
+    .merge(gene_read_rate_tbl)
+)
+with Pool(processes=10) as pool:
+        # pool.map applies 'parallel_func' to every item in 'pairwise_combinations'
+        df = pool.map(partial(get_cell_enrich,data_tbl=data_tbl), count_tbl.barcode_idx.drop_duplicates().to_list())
+
+data_enrich_tbl = pd.concat(df)
+
+# %%
+zero_vs_non_zero_tbl = (pd.melt(adata.obsm['pearson_residuals'].reset_index(),
+        id_vars=['index'],
+        var_name='name',
+        value_name='sctransform')
+.rename(columns={'index':'ID'})
+.merge(barcode_label_tbl.assign(barcode_idx = lambda df: df.index +1 ),how='left')
+.merge(gene_label_tbl.assign(gene_idx = lambda df: df.index+1).loc[:,['name','gene_idx']],how='left')
+.merge(count_tbl,how='left')
+.fillna(0)
+.assign(zero = lambda df: np.where(df.read_count.lt(1),0,1))
+)
+#%%
+zero_vs_non_zero_tbl.plot.scatter(x='zero',y='sctransform',s=0.1,alpha=0.01,xlim=(-1,2))
+
+#%%
+(zero_vs_non_zero_tbl
+.merge(cell_cov_tbl)
+.assign(lib_norm = lambda df: np.log10((df.read_count/df.tot_count)+1))
+.plot.scatter(x='zero',y='lib_norm',s=0.01,alpha=0.1,xlim=(-1,2))
+)
+#%%
+(zero_vs_non_zero_tbl
+ .assign(obs = lambda df: df.zero.lt(1))
+.groupby('ID')
+.agg(non_zero = ('obs','mean'))
+.non_zero.plot.kde(title='proportion of zero count genes in cell')
+)
+#%%
+(zero_vs_non_zero_tbl
+ .assign(obs = lambda df: df.zero.lt(1))
+.groupby('gene_idx')
+.agg(non_zero = ('obs','mean'))
+.non_zero.plot.kde(title='proportion of zero count cells for gene')
+)
+#%%
+(zero_vs_non_zero_tbl
+.merge(cell_cov_tbl)
+.zero.value_counts()
+.reset_index()
+.assign(non_zero= lambda df: np.where(df.zero.lt(1),'zero','non-zero'))
+.loc[:,['non_zero','count']]
+.plot.bar(x='non_zero', title='zero count prevalence')
+)
+# %%
+(zero_vs_non_zero_tbl
+.merge(cell_cov_tbl)
+.query('zero == 0')
+.plot.scatter(x='tot_count',y='sctransform',s=1,alpha=0.1)
+)
+# %%
+(zero_vs_non_zero_tbl
+.merge(cell_cov_tbl)
+.assign(lib_norm = lambda df: np.log10((df.read_count/df.tot_count)+1))
+.query('zero == 1')
+.sort_values('read_count')
+.assign(count_col = lambda df: np.log10(df.read_count))
+.plot.scatter(x='tot_count',y='lib_norm',c='count_col',logy=True,s=0.5)
+)
+# %%
+(zero_vs_non_zero_tbl
+.merge(cell_cov_tbl)
+.assign(lib_norm = lambda df: np.log10((df.read_count/df.tot_count)+1))
+.query('zero == 1')
+.sort_values('read_count')
+.assign(count_col = lambda df: np.log10(df.read_count))
+.plot.scatter(x='sctransform',y='lib_norm',c='count_col',logy=True,s=0.5)
+)
+#%%
+(
+    zero_vs_non_zero_tbl
+    .merge(data_enrich_tbl.loc[:,['gene_idx','barcode_idx','enrichment','cell_rate']],how='left')
+    .fillna(1)
+    .query('zero==1')
+    .assign(rate_col = lambda df: np.log10(df.cell_rate))
+    .sort_values('cell_rate')
+    .assign(sctransform_rank = lambda df: df.sctransform.rank(pct=True))
+    .plot.scatter(x='enrichment',y='sctransform',c='rate_col',xlabel='binomial test p-value',s=0.1)
 )
 # %%
