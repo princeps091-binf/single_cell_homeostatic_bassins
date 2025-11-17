@@ -3,3 +3,4 @@ data/filtered_gene_bc_matrices/hg19/barcodes.tsv
 data/filtered_gene_bc_matrices/hg19/genes.tsv
 data/filtered_gene_bc_matrices/hg19/matrix.mtx
 .vscode/settings.json
+data/R_sctransform/pbmc3k_sctransform.tsv
