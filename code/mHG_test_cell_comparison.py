@@ -168,7 +168,6 @@ mght_ordered_linked = optimal_leaf_ordering(linked, mhgt_condensed_dist_matrix)
 mght_leaf_order = dendrogram(mght_ordered_linked, no_plot=True)['leaves']
 mght_reordered_matrix = dist_matrix_square.to_numpy()[mght_leaf_order, :]
 mght_reordered_matrix = mght_reordered_matrix[:, mght_leaf_order]
-
 #%%
 fig, ax = plt.subplots(figsize=(7, 6))
 
@@ -180,13 +179,42 @@ im = ax.imshow(mght_reordered_matrix, cmap='plasma_r', interpolation='nearest')
 mds = MDS(n_components=2,n_init=5, dissimilarity='precomputed', random_state=42)
 X_transformed = mds.fit_transform(dist_matrix_square)
 #%%
+reordered_biomarker_trx_tbl = (data_enrich_tbl
+ .query('barcode_idx in @unique_items')
+ .query('gene_idx == @gene_of_interest_idx')
+ .loc[:,['barcode_idx','gene_idx','enrichment']]
+ .set_index('barcode_idx')
+ .loc[unique_items]
+)
+
+
+#%%
+plt_tbl = pd.DataFrame({'x':X_transformed[:, 0],
+                        'y':X_transformed[:, 1],
+                        'biomarker_lvl':reordered_biomarker_trx_tbl.enrichment.to_numpy()})
 plt.figure(figsize=(8, 6))
-plt.scatter(X_transformed[:, 0], X_transformed[:, 1])
+plt.scatter(plt_tbl.x.to_numpy(), plt_tbl.y.to_numpy(),c=plt_tbl.biomarker_lvl.to_numpy(),cmap='viridis_r')
 plt.title('MDS Embedding with Precomputed Distance Matrix')
 plt.xlabel('Component 1')
 plt.ylabel('Component 2')
 plt.grid(True)
 plt.show()
+
+#%%
+reducer = umap.UMAP(metric='precomputed', random_state=42)
+embedding = reducer.fit_transform(dist_matrix_square)
+plt_tbl = pd.DataFrame({'x':embedding[:, 0],
+                        'y':embedding[:, 1],
+                        'biomarker_lvl':reordered_biomarker_trx_tbl.enrichment.to_numpy()})
+
+plt.figure(figsize=(8, 6))
+plt.scatter(plt_tbl.x.to_numpy(), plt_tbl.y.to_numpy(),c=plt_tbl.biomarker_lvl.to_numpy(),cmap='viridis_r')
+plt.title('MDS Embedding with Precomputed Distance Matrix')
+plt.xlabel('Component 1')
+plt.ylabel('Component 2')
+plt.grid(True)
+plt.show()
+
 # %%
 cell_a_tbl = (
     data_enrich_tbl
