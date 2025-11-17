@@ -12,6 +12,7 @@ from scipy.cluster.hierarchy import linkage, dendrogram, optimal_leaf_ordering
 import matplotlib.pyplot as plt
 from sklearn.metrics.pairwise import euclidean_distances,manhattan_distances, cosine_distances
 from sklearn.manifold import MDS
+import umap 
 #%%
 #%%
 
@@ -176,7 +177,7 @@ fig, ax = plt.subplots(figsize=(7, 6))
 # 'interpolation' determines how pixels are drawn (nearest is usually best for matrices)
 im = ax.imshow(mght_reordered_matrix, cmap='plasma_r', interpolation='nearest')
 #%%
-mds = MDS(n_components=2, dissimilarity='precomputed', random_state=42)
+mds = MDS(n_components=2,n_init=5, dissimilarity='precomputed', random_state=42)
 X_transformed = mds.fit_transform(dist_matrix_square)
 #%%
 plt.figure(figsize=(8, 6))
@@ -260,11 +261,32 @@ fig, ax = plt.subplots(figsize=(7, 6))
 # 'cmap' sets the color scheme (e.g., 'viridis', 'plasma', 'coolwarm', 'Greys')
 # 'interpolation' determines how pixels are drawn (nearest is usually best for matrices)
 im = ax.imshow(reordered_matrix, cmap='plasma_r', interpolation='nearest')
+#%%
+X_conventional_transformed = mds.fit_transform(tmp_distance_matrix)
+
+plt.figure(figsize=(8, 6))
+plt.scatter(X_conventional_transformed[:, 0], X_conventional_transformed[:, 1])
+plt.title('MDS Embedding with Precomputed Distance Matrix')
+plt.xlabel('Component 1')
+plt.ylabel('Component 2')
+plt.grid(True)
+plt.show()
 
 # %%
 (pd.DataFrame({'mght':mhgt_condensed_dist_matrix,'euclidean':condensed_dist_matrix})
  .plot
  .scatter(x='mght',y='euclidean',s=0.1,alpha=0.3))
 
+
+# %%
+reducer = umap.UMAP(metric='precomputed', random_state=42)
+embedding = reducer.fit_transform(tmp_distance_matrix)
+plt.figure(figsize=(8, 6))
+plt.scatter(embedding[:, 0], embedding[:, 1])
+plt.title('MDS Embedding with Precomputed Distance Matrix')
+plt.xlabel('Component 1')
+plt.ylabel('Component 2')
+plt.grid(True)
+plt.show()
 
 # %%
