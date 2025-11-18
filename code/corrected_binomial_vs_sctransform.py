@@ -13,12 +13,8 @@ filtered_gene_label = './../data/filtered_gene_bc_matrices/hg19/genes.tsv'
 filtered_barcode_label = './../data/filtered_gene_bc_matrices/hg19/barcodes.tsv'
 sctransform_file = './../data/R_sctransform/pbmc3k_sctransform.tsv'
 #%%
-sctransform_tbl = (pd.melt(pd.read_csv(sctransform_file,sep='\t').reset_index(),
-        id_vars=['index'],
-        var_name='name',
-        value_name='sctransform')
- .rename(columns={'index':'name','name':'ID'})
-)
+sctransform_tbl = pd.read_csv(sctransform_file,sep='\t')
+
 # %%
 gene_label_tbl = (pd.read_csv(filtered_gene_label,comment='%',sep='\t',header=None)
  .rename(columns={0:'ID',1:'name'})
@@ -97,19 +93,76 @@ with Pool(processes=10) as pool:
 
 data_enrich_tbl = pd.concat(df)
 #%%
-
-sctransform_tbl = (sctransform_tbl
+(sctransform_tbl
 .merge(barcode_label_tbl
        .assign(alt_ID = lambda df: df.ID.str.slice(stop=-2))
        .assign(barcode_idx = lambda df: df.index +1 )
        .loc[:,['alt_ID','barcode_idx']]
        .rename(columns={'alt_ID':'ID'}),how='left')
+# inherent discrepancy due to non-unique gene names
+.merge(gene_label_tbl.assign(gene_idx = lambda df: df.index+1).loc[:,['name','gene_idx']],how='left')
+.merge(count_tbl.rename(columns={'read_count':'original_count'}),how='left')
+.fillna(0)
+.groupby(['name','ID','barcode_idx','sctransform','read_count'])
+.agg(ori_read_count = ('original_count','max'))
+.reset_index()
+.plot.scatter(x='read_count',y='ori_read_count')
+)
+
+#%%
+(sctransform_tbl
+ .assign(zero_count = lambda df: np.where(df.read_count.lt(1),'zero','observed'))
+ .plot.scatter(x='zero_count',y='sctransform',s=0.1,alpha=0.5)
+)
+#%%
+avg_sctransform = sctransform_tbl.sctransform.mean()
+tot_var_sctransform = (sctransform_tbl
+ .assign(sct_var = lambda df: (df.sctransform - avg_sctransform)**2)
+ .sct_var.sum()
+)
+(sctransform_tbl
+ .assign(sct_var = lambda df: (df.sctransform - avg_sctransform)**2)
+ .assign(zero_count = lambda df: np.where(df.read_count.lt(1),'zero','observed'))
+
+ .groupby('zero_count')
+ .agg(sct_var = ('sct_var','sum'))
+ .reset_index()
+ .assign(prop_var = lambda df: df.sct_var/tot_var_sctransform)
+)
+#%%
+gene_var_summary_tbl = (sctransform_tbl
+ .assign(sct_var = lambda df: (df.sctransform - avg_sctransform)**2)
+ .groupby('name')
+ .agg(tot_var = ('sct_var','sum'))
+ .reset_index()
+)
+
+(sctransform_tbl
+ .assign(zero_count = lambda df: np.where(df.read_count.lt(1),'zero','observed'))
+ .assign(sct_var = lambda df: (df.sctransform - avg_sctransform)**2)
+ .groupby(['name','zero_count'])
+ .agg(sct_var = ('sct_var','sum'))
+ .reset_index()
+ .merge(gene_var_summary_tbl)
+ .assign(var_prop= lambda df: df.sct_var/df.tot_var)
+ .groupby('zero_count')
+ .var_prop
+ .plot.kde(legend=True)
+)
+#%%
+matched_sctransform_tbl = (sctransform_tbl.loc[:,['name','ID','sctransform']]
+.merge(barcode_label_tbl
+       .assign(alt_ID = lambda df: df.ID.str.slice(stop=-2))
+       .assign(barcode_idx = lambda df: df.index +1 )
+       .loc[:,['alt_ID','barcode_idx']]
+       .rename(columns={'alt_ID':'ID'}),how='left')
+# inherent discrepancy due to non-unique gene names
 .merge(gene_label_tbl.assign(gene_idx = lambda df: df.index+1).loc[:,['name','gene_idx']],how='left')
 .merge(count_tbl,how='left')
 .fillna(0)
 )
 # %%
-binom_vs_sctransform_tbl = (sctransform_tbl
+binom_vs_sctransform_tbl = (matched_sctransform_tbl
  .merge(data_enrich_tbl.loc[:,['gene_idx','barcode_idx','enrichment','cell_rate','cell_vs_bulk_OR']],how='left')
  .assign(enrichment = lambda df: np.where(df.read_count.lt(1),1,df.enrichment),
          cell_rate = lambda df: np.where(df.read_count.lt(1),0,df.cell_rate),
