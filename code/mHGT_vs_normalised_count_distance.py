@@ -10,7 +10,7 @@ from functools import partial
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage, dendrogram, optimal_leaf_ordering
 import matplotlib.pyplot as plt
-from sklearn.metrics.pairwise import euclidean_distances,manhattan_distances, cosine_distances
+from sklearn.metrics.pairwise import euclidean_distances,manhattan_distances,pairwise_distances,cosine_similarity
 from sklearn.manifold import MDS
 import umap 
 import scanpy as sc
@@ -104,13 +104,14 @@ def get_cell_similarity(pair,data_tbl):
     cell_b_tbl = data_tbl.query('barcode_idx == @pair[1]')
     
     a_b_gene_inter_list = list(set(cell_b_tbl.gene_idx.to_list()).intersection(cell_a_tbl.gene_idx.to_list()))
+    a_b_gene_union_list = list(set(cell_b_tbl.gene_idx.to_list()).union(cell_a_tbl.gene_idx.to_list()))
 
     v_a = cell_a_tbl.sort_values('pscore',ascending=False).assign(v=lambda df: np.where(df.gene_idx.isin(a_b_gene_inter_list),1,0)).v.to_numpy()
     v_b = cell_b_tbl.sort_values('pscore',ascending=False).assign(v=lambda df: np.where(df.gene_idx.isin(a_b_gene_inter_list),1,0)).v.to_numpy()
 
     _, _, pval_a = xlmhglite.xlmhg_test(v_a, int(1), int(cell_a_tbl.shape[0]))
     _, _, pval_b = xlmhglite.xlmhg_test(v_b, int(1), int(cell_b_tbl.shape[0]))
-    return pd.DataFrame({'a':[pair[0]],'b':pair[1],'a_pvalue':[pval_a],'b_pvalue':[pval_b]})
+    return pd.DataFrame({'a':[pair[0]],'b':pair[1],'a_pvalue':[pval_a],'b_pvalue':[pval_b],'shared_gene':[len(a_b_gene_inter_list)],'all_gene':[len(a_b_gene_union_list)]})
 
 #%%
 with Pool(processes=10) as pool:
@@ -118,9 +119,75 @@ with Pool(processes=10) as pool:
         df = pool.map(partial(get_cell_enrich,data_tbl=data_tbl), count_tbl.barcode_idx.drop_duplicates().to_list())
 #%%
 data_enrich_tbl = pd.concat(df)
+#%%
+dummy_enrichment = (- np.log10(data_enrich_tbl.query('enrichment > 0').enrichment.min())) + 1
+enrichment_dense_matrix= (pd.pivot_table(data_enrich_tbl
+                                         .assign(corrected_enrichment= lambda df: -np.log10(df.enrichment))
+                                         .assign(corrected_enrichment= lambda df: np.where(np.isinf(df.corrected_enrichment.to_numpy()),dummy_enrichment,df.corrected_enrichment)),
+                                         index='barcode_idx',columns='gene_idx',values='corrected_enrichment'))
+enrichment_dense_matrix = enrichment_dense_matrix.fillna(0)
+cosine_sim_mat = cosine_similarity(enrichment_dense_matrix)
 
 #%%
-gene_of_interest_idx = gene_label_tbl.query("name == 'PPBP'").index.to_list()[0] + 1
+fig, ax = plt.subplots(figsize=(7, 6))
+
+# 2. Display the matrix data as an image
+# 'cmap' sets the color scheme (e.g., 'viridis', 'plasma', 'coolwarm', 'Greys')
+# 'interpolation' determines how pixels are drawn (nearest is usually best for matrices)
+im = ax.imshow(cosine_sim_mat, cmap='plasma_r', interpolation='nearest')
+#%%
+cosine_dist_mat = 1 - cosine_sim_mat
+np.fill_diagonal(cosine_dist_mat, 0.0)
+
+#%%
+#cosine_dist_mat = np.round(euclidean_distances(enrichment_dense_matrix),decimals=5)
+#%%
+cosine_condensed_dist_matrix = squareform(cosine_dist_mat)
+linked = linkage(cosine_condensed_dist_matrix, method='ward') # You can choose other methods like 'complete', 'average', 'single'
+# Extract the leaf order from the linkage matrix
+# The optimal_leaf_ordering function reorders the leaves for better visualization
+cosine_ordered_linked = optimal_leaf_ordering(linked, cosine_condensed_dist_matrix)
+cosine_leaf_order = dendrogram(cosine_ordered_linked, no_plot=True)['leaves']
+cosine_reordered_matrix = cosine_dist_mat[cosine_leaf_order, :]
+cosine_reordered_matrix = cosine_dist_mat[:, cosine_leaf_order]
+#%%
+fig, ax = plt.subplots(figsize=(7, 6))
+
+# 2. Display the matrix data as an image
+# 'cmap' sets the color scheme (e.g., 'viridis', 'plasma', 'coolwarm', 'Greys')
+# 'interpolation' determines how pixels are drawn (nearest is usually best for matrices)
+im = ax.imshow(cosine_reordered_matrix, cmap='plasma_r', interpolation='nearest')
+#%%
+reducer = umap.UMAP(metric='precomputed',n_neighbors= 45, random_state=42)
+embedding = reducer.fit_transform(cosine_dist_mat)
+#%%
+gene_of_interest_idx = gene_label_tbl.query("name == 'CD8A'").index.to_list()[0] + 1
+
+bio_lvl_convert_tbl = (data_enrich_tbl.query('gene_idx == @gene_of_interest_idx')
+.loc[:,['enrichment']]
+.assign(corrected_enrichment= lambda df: -np.log10(df.enrichment))
+.assign(corrected_enrichment= lambda df: np.where(np.isinf(df.corrected_enrichment.to_numpy()),dummy_enrichment,df.corrected_enrichment))
+.assign(bior = lambda df: df.corrected_enrichment.rank(pct=True))
+.loc[:,['corrected_enrichment','bior']].reset_index(drop=True)
+)
+plt_tbl = (pd.DataFrame({'x':embedding[:, 0],
+                        'y':embedding[:, 1],
+                        'biomarker_lvl':enrichment_dense_matrix.loc[:,gene_of_interest_idx].to_numpy()})
+                        .assign(bio_s = lambda df: np.where(df.biomarker_lvl.gt(0),10,0.1),
+                                bio_c = lambda df: df.biomarker_lvl)
+                        .sort_values('biomarker_lvl')
+                        .merge(bio_lvl_convert_tbl,left_on='biomarker_lvl',right_on='corrected_enrichment',how='outer').fillna(0))
+
+plt.figure(figsize=(8, 6))
+plt.scatter(plt_tbl.x.to_numpy(), plt_tbl.y.to_numpy(),c=plt_tbl.bior.to_numpy(),s=plt_tbl.bio_s.to_numpy())
+plt.title('UMAP Embedding with Precomputed Distance Matrix')
+plt.xlabel('Component 1')
+plt.ylabel('Component 2')
+plt.grid(True)
+plt.show()
+
+#%%
+gene_of_interest_idx = gene_label_tbl.query("name == 'GZMB'").index.to_list()[0] + 1
 
 cells_of_interest_list = (count_tbl
  .query('gene_idx == @gene_of_interest_idx')
@@ -143,10 +210,8 @@ with Pool(processes=10) as pool:
 # %%
 tmp_biomarker_bassin_tbl = (pd.concat(df)
  .assign(avg_pvalue = lambda df: (df.a_pvalue + df.b_pvalue)/2)
- .assign(two_way= lambda df: df.a_pvalue.lt(0.5) * df.b_pvalue.lt(0.5))
  .assign(a_b = lambda df: df.a_pvalue.lt(df.b_pvalue))
  .assign(max_pvalue = lambda df: np.where(df.a_b,df.b_pvalue,df.a_pvalue))
-#  .query('two_way')
 )
 #%%
 unique_items = sorted(list(set(tmp_biomarker_bassin_tbl['a']).union(set(tmp_biomarker_bassin_tbl['b']))))
@@ -190,7 +255,7 @@ reordered_biomarker_trx_tbl = (data_enrich_tbl
 #%%
 plt_tbl = pd.DataFrame({'x':X_transformed[:, 0],
                         'y':X_transformed[:, 1],
-                        'biomarker_lvl':reordered_biomarker_trx_tbl.enrichment.to_numpy()})
+                        'biomarker_lvl':reordered_biomarker_trx_tbl.enrichment.rank(pct=True).to_numpy()})
 plt.figure(figsize=(8, 6))
 plt.scatter(plt_tbl.x.to_numpy(), plt_tbl.y.to_numpy(),c=plt_tbl.biomarker_lvl.to_numpy(),cmap='viridis_r')
 plt.title('MDS Embedding with Precomputed Distance Matrix')
@@ -204,7 +269,7 @@ reducer = umap.UMAP(metric='precomputed', random_state=42)
 embedding = reducer.fit_transform(dist_matrix_square)
 plt_tbl = pd.DataFrame({'x':embedding[:, 0],
                         'y':embedding[:, 1],
-                        'biomarker_lvl':reordered_biomarker_trx_tbl.enrichment.to_numpy()})
+                        'biomarker_lvl':reordered_biomarker_trx_tbl.enrichment.rank(pct=True).to_numpy()})
 
 plt.figure(figsize=(8, 6))
 plt.scatter(plt_tbl.x.to_numpy(), plt_tbl.y.to_numpy(),c=plt_tbl.biomarker_lvl.to_numpy(),cmap='viridis_r')
@@ -228,9 +293,17 @@ cell_of_interest_id_list = (barcode_label_tbl
 .query('barcode_idx in @cells_of_interest_list')
 .ID.to_list()
 )
-#%%
 pp_subspace_df = adata.to_df().loc[cell_of_interest_id_list,adata.var.query('highly_variable').index]
 pp_subspace_long_df = pd.melt(pp_subspace_df.reset_index().rename(columns={'index':'ID'}),id_vars='ID',var_name='name',value_name='normalised_count')
+#%%
+(pp_subspace_long_df
+ .assign(zero_count = lambda df: df.normalised_count.eq(0))
+ .groupby('ID')
+ .agg(zero_count = ('zero_count','mean'))
+ .zero_count
+ .plot
+ .kde()
+ )
 #%%
 tmp_distance_matrix = euclidean_distances(pp_subspace_df, pp_subspace_df)
 
@@ -265,7 +338,7 @@ X_conventional_transformed = mds.fit_transform(tmp_distance_matrix)
 
 plt_tbl = pd.DataFrame({'x':X_conventional_transformed[:, 0],
                         'y':X_conventional_transformed[:, 1],
-                        'biomarker_lvl':reordered_hvg_biomarker_trx_tbl.enrichment.to_numpy()})
+                        'biomarker_lvl':reordered_hvg_biomarker_trx_tbl.enrichment.rank(pct=True).to_numpy()})
 plt.figure(figsize=(8, 6))
 plt.scatter(plt_tbl.x.to_numpy(), plt_tbl.y.to_numpy(),c=plt_tbl.biomarker_lvl.to_numpy(),cmap='viridis_r')
 plt.title('MDS Embedding with Precomputed Distance Matrix')
@@ -279,7 +352,7 @@ hvg_reducer = umap.UMAP(metric='precomputed', random_state=42)
 hvg_embedding = hvg_reducer.fit_transform(tmp_distance_matrix)
 plt_tbl = pd.DataFrame({'x':hvg_embedding[:, 0],
                         'y':hvg_embedding[:, 1],
-                        'biomarker_lvl':reordered_hvg_biomarker_trx_tbl.enrichment.to_numpy()})
+                        'biomarker_lvl':reordered_hvg_biomarker_trx_tbl.enrichment.rank(pct=True).to_numpy()})
 
 plt.figure(figsize=(8, 6))
 plt.scatter(plt_tbl.x.to_numpy(), plt_tbl.y.to_numpy(),c=plt_tbl.biomarker_lvl.to_numpy(),cmap='viridis_r')
@@ -290,3 +363,56 @@ plt.grid(True)
 plt.show()
 
 # %%
+# Compare euclidean distance HVG normalisedcount vs mght Distance all binomial
+
+mght_dist_tbl = pd.melt(dist_matrix_square.reset_index(),id_vars='index',value_name='mght_distance').rename(columns={'index':'a','variable':'b'})
+
+euc_dist_tbl = pd.melt(pd.DataFrame(tmp_distance_matrix,index = cell_of_interest_id_list,columns=cell_of_interest_id_list).reset_index(),
+        id_vars='index',value_name='euc_distance').rename(columns={'index':'a','variable':'b'})
+#%%
+(mght_dist_tbl
+ .merge(barcode_label_tbl.assign(barcode_idx = lambda df: df.index + 1),
+        left_on='a',right_on='barcode_idx')
+ .drop('barcode_idx',axis=1)
+ .rename(columns={'ID':'ID_a'})
+ .merge(barcode_label_tbl.assign(barcode_idx = lambda df: df.index + 1),
+        left_on='b',right_on='barcode_idx')
+ .drop('barcode_idx',axis=1)
+ .rename(columns={'ID':'ID_b'})
+ .drop(['a','b'],axis=1)
+ .rename(columns={'ID_a':'a','ID_b':'b'})
+ .merge(euc_dist_tbl)
+ .plot
+ .scatter(x='mght_distance',y='euc_distance',s=0.1)
+
+)
+#%%
+# How does subsetting on HVG affect the scope of shared genes between cells
+hvg_cell_list = pp_subspace_long_df.ID.drop_duplicates().to_list()
+pairwise_combinations_hvg_cells = list(itertools.combinations(hvg_cell_list, 2))
+
+def get_cell_pair_shared_genes(pair,data_tbl):
+    cell_a_tbl = data_tbl.query('ID == @pair[0]').query('normalised_count > 0')
+    cell_b_tbl = data_tbl.query('ID == @pair[1]').query('normalised_count > 0')
+    
+    a_b_gene_inter_list = list(set(cell_b_tbl.name.to_list()).intersection(cell_a_tbl.name.to_list()))
+    a_b_gene_union_list = list(set(cell_b_tbl.name.to_list()).union(cell_a_tbl.name.to_list()))
+
+    return pd.DataFrame({'a':[pair[0]],'b':pair[1],'shared_gene':[len(a_b_gene_inter_list)],'all_gene':[len(a_b_gene_union_list)]})
+
+
+# %%
+with Pool(processes=10) as pool:
+        # pool.map applies 'parallel_func' to every item in 'pairwise_combinations'
+        df = pool.map(partial(get_cell_pair_shared_genes,data_tbl=pp_subspace_long_df), pairwise_combinations_hvg_cells)
+
+# %%
+pd.concat(df).shared_gene.plot.kde()
+#%%
+(data_enrich_tbl
+ .sort_values('ncell')
+ .plot
+ .scatter(x='cell_vs_bulk_OR',y='pscore',c='ncell',cmap='magma',s=0.1,logx=True)
+)
+#%%
+
