@@ -10,8 +10,7 @@ from functools import partial
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage, dendrogram, optimal_leaf_ordering
 import matplotlib.pyplot as plt
-from sklearn.metrics.pairwise import euclidean_distances,manhattan_distances
-from sklearn.metrics.pairwise import pairwise_distances
+from sklearn.metrics.pairwise import euclidean_distances,manhattan_distances,pairwise_distances,cosine_similarity
 from sklearn.manifold import MDS
 import umap 
 import scanpy as sc
@@ -121,4 +120,86 @@ cells_of_interest_list = (count_tbl
  )
 print(len(cells_of_interest_list))
 
-data_enrich_tbl.query('gene_idx == @gene_of_interest_idx').plot.scatter(x='prank',y='cell_vs_bulk_OR',logy=True)
+(data_enrich_tbl
+
+ .query('gene_idx == @gene_of_interest_idx')
+ .assign(OR_rank = lambda df: df.cell_vs_bulk_OR.rank(pct=True))
+ .plot.scatter(x='pscore',y='cell_vs_bulk_OR',c='tot_count',cmap='viridis',logy=True,logx=True)
+)
+# %%
+
+(data_enrich_tbl
+.query('barcode_idx in @cells_of_interest_list')
+)
+
+
+dummy_enrichment = (- np.log10(data_enrich_tbl
+                              .query('barcode_idx in @cells_of_interest_list')
+                              .query('enrichment > 0').enrichment.min())) + 1
+enrichment_dense_matrix= (pd.pivot_table(data_enrich_tbl
+                                         .query('barcode_idx in @cells_of_interest_list')
+                                         .assign(corrected_enrichment= lambda df: -np.log10(df.enrichment))
+                                         .assign(corrected_enrichment= lambda df: np.where(np.isinf(df.corrected_enrichment.to_numpy()),dummy_enrichment,df.corrected_enrichment)),
+                                         index='barcode_idx',columns='gene_idx',values='corrected_enrichment'))
+enrichment_dense_matrix = enrichment_dense_matrix.fillna(0)
+cosine_sim_mat = cosine_similarity(enrichment_dense_matrix)
+
+#%%
+fig, ax = plt.subplots(figsize=(7, 6))
+
+# 2. Display the matrix data as an image
+# 'cmap' sets the color scheme (e.g., 'viridis', 'plasma', 'coolwarm', 'Greys')
+# 'interpolation' determines how pixels are drawn (nearest is usually best for matrices)
+im = ax.imshow(cosine_sim_mat, cmap='plasma_r', interpolation='nearest')
+#%%
+cosine_dist_mat = 1 - cosine_sim_mat
+np.fill_diagonal(cosine_dist_mat, 0.0)
+
+#%%
+#cosine_dist_mat = np.round(euclidean_distances(enrichment_dense_matrix),decimals=5)
+#%%
+cosine_condensed_dist_matrix = squareform(cosine_dist_mat)
+linked = linkage(cosine_condensed_dist_matrix, method='ward') # You can choose other methods like 'complete', 'average', 'single'
+# Extract the leaf order from the linkage matrix
+# The optimal_leaf_ordering function reorders the leaves for better visualization
+cosine_ordered_linked = optimal_leaf_ordering(linked, cosine_condensed_dist_matrix)
+cosine_leaf_order = dendrogram(cosine_ordered_linked, no_plot=True)['leaves']
+cosine_reordered_matrix = cosine_dist_mat[cosine_leaf_order, :]
+cosine_reordered_matrix = cosine_reordered_matrix[:, cosine_leaf_order]
+#%%
+fig, ax = plt.subplots(figsize=(7, 6))
+
+# 2. Display the matrix data as an image
+# 'cmap' sets the color scheme (e.g., 'viridis', 'plasma', 'coolwarm', 'Greys')
+# 'interpolation' determines how pixels are drawn (nearest is usually best for matrices)
+im = ax.imshow(cosine_reordered_matrix, cmap='plasma', interpolation='nearest')
+#%%
+reducer = umap.UMAP(metric='precomputed',n_neighbors= 45, random_state=42)
+embedding = reducer.fit_transform(cosine_dist_mat)
+#%%
+gene_of_interest_idx = gene_label_tbl.query("name == 'LYZ'").index.to_list()[0] + 1
+
+bio_lvl_convert_tbl = (data_enrich_tbl.query('gene_idx == @gene_of_interest_idx')
+.loc[:,['enrichment']]
+.assign(corrected_enrichment= lambda df: -np.log10(df.enrichment))
+.assign(corrected_enrichment= lambda df: np.where(np.isinf(df.corrected_enrichment.to_numpy()),dummy_enrichment,df.corrected_enrichment))
+.assign(bior = lambda df: df.corrected_enrichment.rank(pct=True))
+.loc[:,['corrected_enrichment','bior']].reset_index(drop=True)
+)
+plt_tbl = (pd.DataFrame({'x':embedding[:, 0],
+                        'y':embedding[:, 1],
+                        'biomarker_lvl':enrichment_dense_matrix.loc[:,gene_of_interest_idx].to_numpy()})
+                        .assign(bio_s = lambda df: np.where(df.biomarker_lvl.gt(0),10,0.1),
+                                bio_c = lambda df: df.biomarker_lvl)
+                        .sort_values('biomarker_lvl')
+                        .merge(bio_lvl_convert_tbl,left_on='biomarker_lvl',right_on='corrected_enrichment',how='outer').fillna(0))
+
+plt.figure(figsize=(8, 6))
+plt.scatter(plt_tbl.x.to_numpy(), plt_tbl.y.to_numpy(),c=plt_tbl.bior.to_numpy(),s=plt_tbl.bio_s.to_numpy())
+plt.title('UMAP Embedding with Precomputed Distance Matrix')
+plt.xlabel('Component 1')
+plt.ylabel('Component 2')
+plt.grid(True)
+plt.show()
+
+# %%
