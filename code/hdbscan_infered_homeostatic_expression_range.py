@@ -3,7 +3,10 @@ import pandas as pd
 import numpy as np
 import hdbscan
 import statsmodels.stats.rates as st
-from scipy.stats import binom
+from scipy.stats import binom, false_discovery_control
+from multiprocessing import Pool
+from functools import partial
+from scipy.spatial.distance import cdist
 #%%
 
 filtered_count_file = './../data/filtered_gene_bc_matrices/hg19/matrix.mtx'
@@ -39,19 +42,110 @@ gene_read_rate_tbl = (gene_read_rate_tbl
                       .assign(gene_read_rate = lambda df: df.gene_read_count / count_tbl.read_count.sum())
                       .reset_index()
                       )
-
 #%%
-gene_of_interest_idx = gene_label_tbl.query("name == 'MS4A7'").index.to_list()[0] + 1
-
-gene_of_interest_obs_count_tbl = (
-
+cell_cov_tbl = (count_tbl
+ .groupby('barcode_idx')
+ .agg(tot_count= ('read_count','sum'))
+ .reset_index())
+#%%
+gene_stat_df = (
     count_tbl
-    .query("gene_idx == @gene_of_interest_idx")
     .merge(cell_cov_tbl)
     .assign(rel_count = lambda df: df.read_count / df.tot_count)
-    .assign(lcount = lambda df: np.log10(df.rel_count))
+    .groupby('gene_idx')
+    .agg(ncell = ('barcode_idx','nunique'),
+        avg_rel = ('rel_count','mean'),
+        std_rel = ('rel_count','std'),
+        )
+    .reset_index()
+    .assign(CV2 = lambda df: (df.std_rel/df.avg_rel)**2)
+)
+gene_stat_df = (
+    count_tbl
+    .merge(cell_cov_tbl)
+    .assign(rel_count = lambda df: df.read_count / df.tot_count)
+    .groupby('gene_idx')
+    .agg(ncell = ('barcode_idx','nunique'),
+        avg_rel = ('rel_count','mean'),
+        std_rel = ('rel_count','std'),
+        )
+    .reset_index()
+    .assign(CV2 = lambda df: (df.std_rel/df.avg_rel)**2)
+)
+#%%
+gene_read_rate_tbl =(
+    count_tbl
+    .groupby('gene_idx')
+    .agg(gene_read_count = ('read_count','sum'),
+         ncell = ('barcode_idx','nunique'))
+)
+gene_read_rate_tbl = (gene_read_rate_tbl
+                      .assign(gene_read_rate = lambda df: df.gene_read_count / count_tbl.read_count.sum())
+                      .assign(detection_limit_sample = lambda df: 1/df.gene_read_rate)
+                      .reset_index()
+                      )
+# %%
+
+data_tbl = (    count_tbl
+    .merge(cell_cov_tbl)
+    .merge(gene_read_rate_tbl)
+)
+#%%
+def get_cell_enrich(cell_id,data_tbl):
+    return (data_tbl
+        .query('barcode_idx == @cell_id')
+        .assign(cell_rate = lambda df: df.read_count/df.tot_count)
+        .assign(cell_vs_bulk_OR= lambda df: df.cell_rate/df.gene_read_rate)
+        .assign(enrichment = lambda df: df.apply(lambda row: binom.sf(row.read_count, row.tot_count, row.gene_read_rate),axis=1),
+                fdr = lambda df: false_discovery_control(df.enrichment))
+        .assign(pscore = lambda df: -np.log10(df.enrichment),
+                prank = lambda df: df.pscore.rank(pct=True,ascending=False)
+                )
+
+        )  
+#%%
+with Pool(processes=10) as pool:
+        # pool.map applies 'parallel_func' to every item in 'pairwise_combinations'
+        df = pool.map(partial(get_cell_enrich,data_tbl=data_tbl), count_tbl.barcode_idx.drop_duplicates().to_list())
+
+data_enrich_tbl = pd.concat(df)
+
+#%%
+gene_of_interest_idx = gene_label_tbl.query("name == 'CD3D'").index.to_list()[0] + 1
+
+gene_of_interest_tbl = (
+
+    data_enrich_tbl
+    .query("gene_idx == @gene_of_interest_idx")
     
 )
+#%%
+###########
+# Compare every marker expressing cell against non-marker cells
+# marker_cells
+marker_cell_id = gene_of_interest_tbl.barcode_idx.unique()
+# marker less cells
+non_marker_cell_id = data_enrich_tbl.query('~(barcode_idx in @marker_cell_id)').barcode_idx.unique()
+## 
+data_enrich_wide_df = (data_enrich_tbl
+.query('gene_idx != @gene_of_interest_idx')
+.loc[:,['barcode_idx','gene_idx','enrichment']]
+.pivot(index='barcode_idx',columns='gene_idx',values='enrichment')
+.fillna(1)
+)
+#%%
+marker_cell_profiles_array = data_enrich_wide_df.loc[marker_cell_id,:].to_numpy()
+non_marker_cell_profiles_array = data_enrich_wide_df.loc[non_marker_cell_id,:].to_numpy()
+distance_matrix = cdist(marker_cell_profiles_array,non_marker_cell_profiles_array,metric='cosine')
+#%%
+# np.quantile(distance_matrix,[0.1,0.5,0.9],axis=1)
+(pd.DataFrame({'mdist':np.min(distance_matrix,axis=1),'barcode_idx':marker_cell_id})
+ .merge(gene_of_interest_tbl.loc[:,['barcode_idx','enrichment','pscore','cell_vs_bulk_OR','tot_count']])
+ .plot.scatter(x='cell_vs_bulk_OR',y='mdist',c='tot_count',logx=True,cmap='viridis',s=0.1)
+)
+#%%
+gene_of_interest_tbl.cell_vs_bulk_OR.plot.kde()
+#%%
 min_bassin_size = np.ceil(gene_of_interest_obs_count_tbl.barcode_idx.nunique()/10).astype(int)
 marker_clustering = hdbscan.HDBSCAN(min_cluster_size= np.max([min_bassin_size,50]),min_samples=1,allow_single_cluster=True,cluster_selection_method='eom')
 

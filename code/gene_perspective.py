@@ -108,7 +108,7 @@ data_enrich_tbl = pd.concat(df)
  .enrichment
  .plot.kde(legend=True))
 #%%
-gene_of_interest_idx = gene_label_tbl.query("name == 'LYZ'").index.to_list()[0] + 1
+gene_of_interest_idx = gene_label_tbl.query("name == 'GNLY'").index.to_list()[0] + 1
 
 cells_of_interest_list = (count_tbl
  .query('gene_idx == @gene_of_interest_idx')
@@ -156,8 +156,6 @@ cosine_dist_mat = 1 - cosine_sim_mat
 np.fill_diagonal(cosine_dist_mat, 0.0)
 
 #%%
-#cosine_dist_mat = np.round(euclidean_distances(enrichment_dense_matrix),decimals=5)
-#%%
 cosine_condensed_dist_matrix = squareform(cosine_dist_mat)
 linked = linkage(cosine_condensed_dist_matrix, method='ward') # You can choose other methods like 'complete', 'average', 'single'
 # Extract the leaf order from the linkage matrix
@@ -177,7 +175,7 @@ im = ax.imshow(cosine_reordered_matrix, cmap='plasma', interpolation='nearest')
 reducer = umap.UMAP(metric='precomputed',n_neighbors= 45, random_state=42)
 embedding = reducer.fit_transform(cosine_dist_mat)
 #%%
-gene_of_interest_idx = gene_label_tbl.query("name == 'LYZ'").index.to_list()[0] + 1
+gene_of_interest_idx = gene_label_tbl.query("name == 'GNLY'").index.to_list()[0] + 1
 
 bio_lvl_convert_tbl = (data_enrich_tbl.query('gene_idx == @gene_of_interest_idx')
 .loc[:,['enrichment']]
